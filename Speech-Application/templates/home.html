@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Speech Engine</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #2b1b2f; /* dark purple black */
+            color: #ffffff; /* white text */
+            font-family: "Times New Roman", Times, serif; /* Times New Roman font */
+        }
+
+        h1 {
+            text-align: center;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            background-color: #2b1b2f;
+            border-bottom: 1px solid #000000;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 20px;
+        }
+
+        button, select, input[type="submit"] {
+            margin: 5px;
+            padding: 10px;
+            font-size: 1.2em;
+            background-color: #4a3f53; /* slightly lighter purple for contrast */
+            color: #ffffff; /* white text */
+            border: none;
+            border-radius: 10px; /* Rounded corners */
+            font-family: "Times New Roman", Times, serif; /* Times New Roman font */
+        }
+
+        .centered-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: calc(100vh - 60px); /* Adjust as needed */
+        }
+
+        .text-area-container {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            align-items: center;
+            flex-direction: row;
+        }
+
+        textarea {
+            width: 30vw;
+            height: 80vh;
+            background-color: #4a3f53; /* slightly lighter purple for contrast */
+            color: #ffffff; /* white text */
+            border: none;
+            font-size: 1.2em;
+            border-radius: 10px; /* Rounded corners */
+        }
+
+        .text-area-container div {
+            width: 30vw;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 20px;
+            height: 80vh;
+        }
+
+        .visualizer {
+            width: 45%;
+            height: 200px;
+        }
+        label {
+            font-size: 1.2em; /* Adjust this value to match the font size in the dropdown boxes */
+        }
+        input[type="submit"]:disabled {
+        background-color: #362e3d;
+        color: #666666;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Speech Translation</h1>
+    <header>
+        <form id="device_form">
+            <label for="device_name">Output device:</label>
+            <select id="device" name="device">
+                {% for device in output_devices %}
+                    <option value="{{ device }}" {% if device == default_device %}selected{% endif %}>{{ device }}</option>
+                {% endfor %}
+            </select>
+            <input type="submit" value="Switch device">
+        </form>
+        <form id="model_form">
+            <label for="model_name">Model:</label>
+            <select name="model_name" id="model_name">
+                {% for model_name in models %}
+                <option value="{{ model_name }}">{{ model_name }}</option>
+                {% endfor %}
+            </select>
+            <input type="submit" value="Switch Model">
+        </form>
+        <form id="language_form" title="Future Works">
+            <label for="language">Language:</label>
+            <select name="language" id="language" disabled>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+            </select>
+            <input type="submit" value="Switch Language" disabled>
+        </form>
+        <form action="/shutdown" method="post">
+            <button type="submit">Stop</button>
+        </form>
+    </header>
+    <div class="text-area-container">
+        <div>
+            <label for="transcribed_text">Transcribed Text:</label>
+            <textarea id="transcribed_text" readonly></textarea>
+        </div>
+        <div class="visualizer" id="visualizer">
+            <canvas id="myCanvas"></canvas>
+        </div>
+        <div>
+            <label for="translated_text">Translated Text:</label>
+            <textarea id="translated_text" readonly></textarea>
+        </div>
+    </div>
+    <script>
+    $("#device_form").submit(function(e) {
+        e.preventDefault();
+        $.post("/switch_device", $(this).serialize(), function(data) {
+            // do nothing
+        });
+    });
+    $("#model_form").submit(function(e) {
+        e.preventDefault();
+        $.post("/switch_model", $(this).serialize());
+    });
+    $("#language_form").submit(function(e) {
+        e.preventDefault();
+        $.post("/switch_language", $(this).serialize());
+    });
+    setInterval(function() {
+        $.get("/get_transcribed_text", function(data) {
+            $("#transcribed_text").val(data);
+        });
+        $.get("/get_translated_text", function(data) {
+            $("#translated_text").val(data);
+        });
+    }, 1000);
+    // Get the textarea element
+    const textarea = document.querySelector('textarea');
+
+    // Listen for the input event
+    textarea.addEventListener('input', () => {
+        // Scroll to the bottom
+        textarea.scrollTop = textarea.scrollHeight;
+    });
+    </script>
+    <script type="module">
+        import * as THREE from 'https://threejs.org/build/three.module.js';
+        
+        // Visualizer
+        const scene = new THREE.Scene();
+        const clock = new THREE.Clock();
+        
+        const canvas = document.querySelector('#visualizer canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true});
+        
+        // Set the size of the renderer to the size of the parent div
+        const parentDiv = canvas.parentElement;
+        renderer.setSize(parentDiv.clientWidth, parentDiv.clientHeight);
+        
+        // Adjust the camera's aspect ratio to match the canvas
+        const camera = new THREE.PerspectiveCamera(75, parentDiv.clientWidth / parentDiv.clientHeight, 0.1, 1000);
+        camera.position.z = 10; // Move the camera back
+        const vertexShader = `
+            // The noise functions are from https://github.com/stegu/webgl-noise/tree/master
+            // Classic Perlin 3D Noise
+            varying vec3 vUv;
+            uniform float u_time;
+            uniform float u_volume;
+
+            vec3 mod289(vec3 x)
+            {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+            }
+
+            vec4 mod289(vec4 x)
+            {
+            return x - floor(x * (1.0 / 289.0)) * 289.0;
+            }
+
+            vec4 permute(vec4 x)
+            {
+            return mod289(((x*34.0)+10.0)*x);
+            }
+
+            vec4 taylorInvSqrt(vec4 r)
+            {
+            return 1.79284291400159 - 0.85373472095314 * r;
+            }
+
+            vec3 fade(vec3 t) {
+            return t*t*t*(t*(t*6.0-15.0)+10.0);
+            }
+
+            // Classic Perlin noise, periodic variant
+            float pnoise(vec3 P, vec3 rep)
+            {
+            vec3 Pi0 = mod(floor(P), rep); // Integer part, modulo period
+            vec3 Pi1 = mod(Pi0 + vec3(1.0), rep); // Integer part + 1, mod period
+            Pi0 = mod289(Pi0);
+            Pi1 = mod289(Pi1);
+            vec3 Pf0 = fract(P); // Fractional part for interpolation
+            vec3 Pf1 = Pf0 - vec3(1.0); // Fractional part - 1.0
+            vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+            vec4 iy = vec4(Pi0.yy, Pi1.yy);
+            vec4 iz0 = Pi0.zzzz;
+            vec4 iz1 = Pi1.zzzz;
+
+            vec4 ixy = permute(permute(ix) + iy);
+            vec4 ixy0 = permute(ixy + iz0);
+            vec4 ixy1 = permute(ixy + iz1);
+
+            vec4 gx0 = ixy0 * (1.0 / 7.0);
+            vec4 gy0 = fract(floor(gx0) * (1.0 / 7.0)) - 0.5;
+            gx0 = fract(gx0);
+            vec4 gz0 = vec4(0.5) - abs(gx0) - abs(gy0);
+            vec4 sz0 = step(gz0, vec4(0.0));
+            gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+            gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+
+            vec4 gx1 = ixy1 * (1.0 / 7.0);
+            vec4 gy1 = fract(floor(gx1) * (1.0 / 7.0)) - 0.5;
+            gx1 = fract(gx1);
+            vec4 gz1 = vec4(0.5) - abs(gx1) - abs(gy1);
+            vec4 sz1 = step(gz1, vec4(0.0));
+            gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+            gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+
+            vec3 g000 = vec3(gx0.x,gy0.x,gz0.x);
+            vec3 g100 = vec3(gx0.y,gy0.y,gz0.y);
+            vec3 g010 = vec3(gx0.z,gy0.z,gz0.z);
+            vec3 g110 = vec3(gx0.w,gy0.w,gz0.w);
+            vec3 g001 = vec3(gx1.x,gy1.x,gz1.x);
+            vec3 g101 = vec3(gx1.y,gy1.y,gz1.y);
+            vec3 g011 = vec3(gx1.z,gy1.z,gz1.z);
+            vec3 g111 = vec3(gx1.w,gy1.w,gz1.w);
+
+            vec4 norm0 = taylorInvSqrt(vec4(dot(g000, g000), dot(g010, g010), dot(g100, g100), dot(g110, g110)));
+            g000 *= norm0.x;
+            g010 *= norm0.y;
+            g100 *= norm0.z;
+            g110 *= norm0.w;
+            vec4 norm1 = taylorInvSqrt(vec4(dot(g001, g001), dot(g011, g011), dot(g101, g101), dot(g111, g111)));
+            g001 *= norm1.x;
+            g011 *= norm1.y;
+            g101 *= norm1.z;
+            g111 *= norm1.w;
+
+            float n000 = dot(g000, Pf0);
+            float n100 = dot(g100, vec3(Pf1.x, Pf0.yz));
+            float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+            float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+            float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+            float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+            float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+            float n111 = dot(g111, Pf1);
+
+            vec3 fade_xyz = fade(Pf0);
+            vec4 n_z = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fade_xyz.z);
+            vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
+            float n_xyz = mix(n_yz.x, n_yz.y, fade_xyz.x); 
+            return 2.2 * n_xyz;
+            }
+
+            void main() {
+                float noise = 4.0 * pnoise(position + u_time, vec3(10.0)) * u_volume; // Use u_volume to scale the noise
+                float displacement = noise / 10.0;
+                vec3 newPosition = position + normal * displacement;
+                vUv = (modelMatrix * vec4(position, 1.0)).xyz; 
+
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec2 u_resolution;
+
+            void main() {
+                vec2 st = gl_FragCoord.xy / u_resolution;
+                vec3 lightBlue = vec3(0.5, 0.7, 1.0);
+                vec3 purple = vec3(0.5, 0.0, 1.0);
+                vec3 color = mix(lightBlue, purple, st.x * st.y); // Interpolate between lightBlue and purple based on position
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+        const uniforms = {
+            u_time: { type: 'f', value: 0.0 },
+            u_resolution: { type: 'v2', value: new THREE.Vector2(window.innerWidth,window.innerHeight) },
+            u_volume: { type: 'f', value: 0.0 }, // Add this line
+        };
+        let analyser;
+
+        const geometry = new THREE.IcosahedronGeometry(4, 20);
+        const material = new THREE.ShaderMaterial({
+            uniforms,
+            vertexShader: vertexShader,
+            fragmentShader: fragmentShader,
+            wireframe: true, // Keep wireframe
+        });
+        const icosahedron = new THREE.Mesh(geometry, material);
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            .then(function(stream) {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                // Continue with the rest of the script...
+            })
+            .catch(function(err) {
+                // Handle error - user denied access to microphone
+            });
+        
+        scene.add(icosahedron);
+        
+        let smoothedVolume = 1.0; // Add this line outside the animate function
+        function animate() {
+            requestAnimationFrame(animate);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(data);
+
+            let volume = 0;
+            for(let i = 0; i < data.length; i++) {
+                volume += data[i];
+            }
+            volume /= data.length;
+            // Clamp the volume
+            volume = Math.max(1, Math.min(volume, 3));
+            // Smooth the volume
+            const smoothingFactor = 0.1; // Adjust this value to change the smoothing speed
+            smoothedVolume += smoothingFactor * (volume - smoothedVolume);
+
+            material.uniforms.u_volume.value = smoothedVolume;
+            // Update the u_time uniform
+            material.uniforms.u_time.value = clock.getElapsedTime();
+            icosahedron.rotation.x += 0.001;
+            icosahedron.rotation.y += 0.001;
+            renderer.render(scene, camera);
+        }
+    
+        animate();
+    </script>
+</body>
+</html>
